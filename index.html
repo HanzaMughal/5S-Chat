@@ -2169,7 +2169,18 @@
                         mediaRec.ondataavailable = e => audioChunks.push(e.data);
                         mediaRec.start();
                         isRec.value = true;
-                    } catch { alert('Microphone access denied.'); }
+                    } catch (e) {
+                        console.log('[Media] getUserMedia error:', e.name, e.message);
+                        if (e.name === 'NotAllowedError' || e.name === 'PermissionDeniedError') {
+                            alert('Microphone access was denied.\nPlease click the padlock/site-info icon in your browser address bar → Permissions → Microphone → Allow, then reload the page.');
+                        } else if (e.name === 'NotFoundError') {
+                            alert('No microphone was found on this device.');
+                        } else if (e.name === 'NotReadableError') {
+                            alert('Your microphone is already in use by another app.');
+                        } else {
+                            alert('Could not access microphone (' + e.name + '): ' + e.message);
+                        }
+                    }
                 };
                 const stopRec = () => {
                     if (!mediaRec) return;
@@ -2367,6 +2378,47 @@
                 let _answerListener = null;
                 let _candidateListener = null;
 
+                // ── Shared media-permission helper ───────────────────────────
+                // Returns a user-friendly error string based on the error name from
+                // a failed getUserMedia() call, or null if the call should be
+                // silently aborted (e.g. permission already denied before we called).
+                const getMediaError = (e, callType) => {
+                    const needs = callType === 'video' ? 'Camera and Microphone' : 'Microphone';
+                    switch (e.name) {
+                        case 'NotAllowedError':
+                        case 'PermissionDeniedError':
+                            return `${needs} access was denied.\nPlease click the padlock / site-info icon in your browser address bar → Permissions → allow ${needs}, then reload the page.\n\nOn mobile, check Settings → Apps → Browser → Permissions.`;
+                        case 'NotFoundError':
+                            return `No ${needs.toLowerCase()} was found on this device.`;
+                        case 'NotReadableError':
+                            return `Your ${needs.toLowerCase()} is already in use by another app. Close it and try again.`;
+                        default:
+                            return `Could not access ${needs.toLowerCase()} (${e.name}): ${e.message}`;
+                    }
+                };
+
+                // Pre-flight check: query Permissions API and return true if blocked.
+                // Resolves to true  → permission is 'denied', caller should abort.
+                // Resolves to false → unknown or granted, caller should proceed.
+                const isMediaBlocked = async (callType) => {
+                    const permsToCheck = callType === 'video'
+                        ? ['microphone', 'camera']
+                        : ['microphone'];
+                    try {
+                        for (const name of permsToCheck) {
+                            const result = await navigator.permissions.query({ name });
+                            if (result.state === 'denied') {
+                                const label = name === 'camera' ? 'Camera' : 'Microphone';
+                                alert(`${label} access is blocked at the browser level.\nClick the padlock / site-info icon in your address bar → Permissions → ${label} → Allow, then reload the page.\n\nOn mobile, check Settings → Apps → Browser → Permissions.`);
+                                return true;
+                            }
+                        }
+                    } catch (_) {
+                        // Permissions API not supported for these names — fall through
+                    }
+                    return false;
+                };
+
                 const startCall = async (type) => {
                     if (!activeChat.value) return;
                     console.log('Starting call...', type);
@@ -2381,6 +2433,9 @@
                     call.camOff = false;
                     call.speaker = (type === 'video'); // Default speaker for video calls
                     candidateQueue = [];
+
+                    // Pre-flight: bail early if browser already has permission blocked
+                    if (await isMediaBlocked(type)) { endCallLocal(); return; }
 
                     try {
                         localStream = await navigator.mediaDevices.getUserMedia({
@@ -2448,8 +2503,8 @@
 
                         listenSignals();
                     } catch (e) {
-                        console.error('Call start error:', e);
-                        alert('Could not start call: ' + e.message);
+                        console.log('[Media] getUserMedia error in startCall:', e.name, e.message);
+                        alert(getMediaError(e, type));
                         endCallLocal();
                     }
                 };
@@ -2458,6 +2513,10 @@
                     console.log('Answering call...');
                     call.status = 'Requesting media...';
                     candidateQueue = [];
+
+                    // Pre-flight: bail early if browser already has permission blocked
+                    if (await isMediaBlocked(call.type)) { endCallLocal(); return; }
+
                     try {
                         localStream = await navigator.mediaDevices.getUserMedia({
                             video: call.type === 'video' ? { facingMode: 'user' } : false,
@@ -2531,8 +2590,14 @@
                         call.incoming = false;
                         listenSignals();
                     } catch (e) {
-                        console.error('Answer error:', e);
-                        alert('Could not answer call: ' + e.message);
+                        console.log('[Media] getUserMedia error in answerCall:', e.name, e.message);
+                        // Only show media-permission message for actual getUserMedia errors;
+                        // Firebase/data errors fall through to the generic branch.
+                        if (e.name && ['NotAllowedError','PermissionDeniedError','NotFoundError','NotReadableError','AbortError','OverconstrainedError','SecurityError'].includes(e.name)) {
+                            alert(getMediaError(e, call.type));
+                        } else {
+                            alert('Could not answer call: ' + e.message);
+                        }
                         endCallLocal();
                     }
                 };
