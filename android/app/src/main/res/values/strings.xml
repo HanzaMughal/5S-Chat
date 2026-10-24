@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">5S Chat</string>
+    <string name="title_activity_main">5S Chat</string>
+    <string name="package_name">com.hmds.s5chat</string>
+    <string name="custom_url_scheme">com.hmds.s5chat</string>
+</resources>

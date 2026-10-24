@@ -1171,9 +1171,12 @@
                         <div style="display:flex;gap:8px;margin-bottom:12px;">
                             <input v-model="uidInput" type="number" placeholder="Enter 6-digit UID"
                                 style="flex:1;border:1px solid var(--border);background:var(--input-bg);color:var(--text-1);padding:10px 14px;border-radius:10px;font-size:14px;outline:none;"
-                                @keydown.enter="sendReq">
-                            <button @click="sendReq"
-                                style="background:var(--teal);color:#fff;border:none;padding:10px 18px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;">Send</button>
+                                @keydown.enter="sendReq" :disabled="sendingReq">
+                            <button @click="sendReq" :disabled="sendingReq"
+                                style="background:var(--teal);color:#fff;border:none;padding:10px 18px;border-radius:10px;font-size:14px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px;">
+                                <i v-if="sendingReq" class="fas fa-spinner fa-spin"></i>
+                                <span>{{ sendingReq ? 'Sending...' : 'Send' }}</span>
+                            </button>
                         </div>
                         <div v-if="reqMsg" style="font-size:13px;padding:6px 0;"
                             :style="{color: reqMsg.type==='error' ? '#ef4444':'var(--teal)'}">
@@ -1192,14 +1195,18 @@
                                 <div style="font-weight:600;color:var(--text-1);font-size:14px;">{{ r.username }}</div>
                                 <div style="font-size:12px;color:var(--text-2);">UID: {{ r.numeric_uid }}</div>
                             </div>
-                            <div v-if="r.type==='incoming'" style="display:flex;gap:6px;">
-                                <button @click.stop="acceptReq(r)"
-                                    style="width:34px;height:34px;border-radius:50%;background:#dcfce7;color:#16a34a;border:none;cursor:pointer;font-size:14px;">
-                                    <i class="fas fa-check"></i>
+                            <div v-if="r.type==='incoming'" style="display:flex;gap:6px;align-items:center;">
+                                <button @click.stop="acceptReq(r)" :disabled="reqActionId === r.uid"
+                                    title="Accept"
+                                    style="width:34px;height:34px;border-radius:50%;background:#dcfce7;color:#16a34a;border:none;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">
+                                    <i v-if="reqActionId === r.uid && reqActionType === 'accept'" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-check"></i>
                                 </button>
-                                <button @click.stop="rejectReq(r)"
-                                    style="width:34px;height:34px;border-radius:50%;background:#fee2e2;color:#dc2626;border:none;cursor:pointer;font-size:14px;">
-                                    <i class="fas fa-times"></i>
+                                <button @click.stop="rejectReq(r)" :disabled="reqActionId === r.uid"
+                                    title="Reject"
+                                    style="width:34px;height:34px;border-radius:50%;background:#fee2e2;color:#dc2626;border:none;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;">
+                                    <i v-if="reqActionId === r.uid && reqActionType === 'reject'" class="fas fa-spinner fa-spin"></i>
+                                    <i v-else class="fas fa-times"></i>
                                 </button>
                             </div>
                             <div v-else style="font-size:12px;color:var(--text-2);font-style:italic;">Sent</div>
@@ -1566,8 +1573,9 @@
                         <button v-else-if="isRec" @click="stopRec" class="send-btn recording" title="Stop recording">
                             <i class="fas fa-stop"></i>
                         </button>
-                        <button v-else @click="sendMsg" class="send-btn" title="Send">
-                            <i class="fas fa-paper-plane" style="margin-left:2px;"></i>
+                        <button v-else @click="sendMsg" class="send-btn" title="Send" :disabled="sendingMsg">
+                            <i v-if="sendingMsg" class="fas fa-spinner fa-spin"></i>
+                            <i v-else class="fas fa-paper-plane" style="margin-left:2px;"></i>
                         </button>
                     </div>
 
@@ -1777,6 +1785,10 @@
                 const reqs = ref([]);
                 const reqMsg = ref(null);
                 const uidInput = ref('');
+                const sendingReq = ref(false);
+                const reqActionId = ref(null);
+                const reqActionType = ref('');
+                const sendingMsg = ref(false);
                 const blockedList = ref([]);
                 const tmpName = ref('');
                 const tmpBio = ref('');
@@ -1815,9 +1827,51 @@
                 let audioPlayer = null;
                 let mediaRec = null;
                 let audioChunks = [];
+                let markReadTimer = null;
                 const chatListeners = new Set();
                 const notified = new Set();
                 const appStart = Date.now();
+
+                // ── API & Token Helpers ──────────────────────────────────────
+                const getIdToken = async () => {
+                    const u = firebase.auth().currentUser;
+                    if (!u) throw new Error('Not authenticated');
+                    return await u.getIdToken();
+                };
+
+                const apiFetch = async (url, body = {}) => {
+                    const token = await getIdToken();
+                    const res = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'Authorization': `Bearer ${token}`
+                        },
+                        body: JSON.stringify(body)
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok) {
+                        throw new Error(data.error || `Request failed with status ${res.status}`);
+                    }
+                    return data;
+                };
+
+                const requestMarkRead = (chatId) => {
+                    if (!chatId) return;
+                    if (document.visibilityState !== 'visible') return;
+                    if (!activeChat.value || activeChat.value.id !== chatId) return;
+
+                    clearTimeout(markReadTimer);
+                    markReadTimer = setTimeout(async () => {
+                        if (document.visibilityState !== 'visible') return;
+                        if (!activeChat.value || activeChat.value.id !== chatId) return;
+                        try {
+                            await apiFetch('/api/mark-read', { chatId });
+                        } catch (err) {
+                            console.error('Failed to mark read:', err);
+                        }
+                    }, 250);
+                };
 
                 // WebRTC
                 let pc = null;
@@ -1924,6 +1978,18 @@
                         if (activeChat.value) { closeChat(); return; }
                         if (tab.value !== 'chats') { tab.value = 'chats'; }
                     });
+
+                    // Call mark-read when chat is open and tab becomes visible/focused
+                    document.addEventListener('visibilitychange', () => {
+                        if (document.visibilityState === 'visible' && activeChat.value) {
+                            requestMarkRead(activeChat.value.id);
+                        }
+                    });
+                    window.addEventListener('focus', () => {
+                        if (document.visibilityState === 'visible' && activeChat.value) {
+                            requestMarkRead(activeChat.value.id);
+                        }
+                    });
                 });
 
                 // ── Auth ─────────────────────────────────────────────────────
@@ -1988,21 +2054,45 @@
                             const metaSnap = await db.ref(`chats/${cid}`).once('value');
                             const meta = metaSnap.val();
                             if (!meta) return null;
-                            const otherUid = Object.keys(meta.members).find(id => id !== uid);
+                            const otherUid = Object.keys(meta.members || {}).find(id => id !== uid);
                             const uSnap = await db.ref(`users/${otherUid}`).once('value');
-                            const other = uSnap.val();
-                            const unread = meta.lastSender !== uid && meta.lastStatus !== 'seen' ? 1 : 0;
-                            return { id: cid, name: other.username, avatar: other.avatar, peerUid: otherUid, lastMessage: meta.lastMessage, timestamp: meta.timestamp, lastSender: meta.lastSender, status: meta.lastStatus || 'sent', unread };
+                            const other = uSnap.val() || {};
+                            const unread = (meta.unread && meta.unread[uid] !== undefined)
+                                ? meta.unread[uid]
+                                : (meta.lastSender !== uid && meta.lastStatus !== 'seen' ? 1 : 0);
+                            return { id: cid, name: other.username || 'User', avatar: other.avatar || '', peerUid: otherUid, lastMessage: meta.lastMessage, timestamp: meta.timestamp, lastSender: meta.lastSender, status: meta.lastStatus || 'sent', unread };
                         }));
                         chatList.value = result.filter(Boolean).sort((a, b) => b.timestamp - a.timestamp);
 
-                        // Per-chat notification listener
+                        // Per-chat notification and realtime sync listener
                         ids.forEach(cid => {
                             if (!chatListeners.has(cid)) {
                                 chatListeners.add(cid);
                                 db.ref(`chats/${cid}`).on('value', (ms) => {
                                     const meta = ms.val();
-                                    if (meta && meta.lastSender !== uid && activeChat.value?.id !== cid) {
+                                    if (!meta) return;
+
+                                    const unreadCount = (meta.unread && meta.unread[uid] !== undefined)
+                                        ? meta.unread[uid]
+                                        : (meta.lastSender !== uid && meta.lastStatus !== 'seen' ? 1 : 0);
+
+                                    // Live update chat item in chatList
+                                    const cIdx = chatList.value.findIndex(x => x.id === cid);
+                                    if (cIdx !== -1) {
+                                        chatList.value[cIdx].lastMessage = meta.lastMessage;
+                                        chatList.value[cIdx].timestamp = meta.timestamp;
+                                        chatList.value[cIdx].lastSender = meta.lastSender;
+                                        chatList.value[cIdx].status = meta.lastStatus || 'sent';
+                                        chatList.value[cIdx].unread = unreadCount;
+                                        chatList.value.sort((a, b) => b.timestamp - a.timestamp);
+                                    }
+
+                                    // Auto mark read if chat is currently open and tab is visible
+                                    if (activeChat.value?.id === cid && document.visibilityState === 'visible' && unreadCount > 0) {
+                                        requestMarkRead(cid);
+                                    }
+
+                                    if (meta.lastSender !== uid && activeChat.value?.id !== cid) {
                                         if (meta.timestamp > appStart) {
                                             const key = `${cid}_${meta.timestamp}`;
                                             if (!notified.has(key)) {
@@ -2050,16 +2140,21 @@
                     window.history.pushState({ view: 'chat' }, '');
                     if (chatUnsub) chatUnsub();
 
+                    if (document.visibilityState === 'visible') {
+                        requestMarkRead(c.id);
+                    }
+
                     const ref2 = db.ref(`messages/${c.id}`).limitToLast(60);
                     let first = true;
                     ref2.on('value', (snap) => {
                         const data = snap.val();
                         const arr = [];
+                        let hasUnread = false;
                         if (data) {
                             Object.entries(data).forEach(([key, val]) => {
                                 arr.push({ id: key, ...val });
                                 if (val.sender !== user.value.uid && val.status !== 'seen') {
-                                    db.ref(`messages/${c.id}/${key}`).update({ status: 'seen', seenAt: firebase.database.ServerValue.TIMESTAMP });
+                                    hasUnread = true;
                                 }
                             });
                         }
@@ -2069,6 +2164,11 @@
                             const box = document.getElementById('msgBox');
                             if (box && (first || arr.length > prev)) { box.scrollTop = box.scrollHeight; first = false; }
                         });
+
+                        // Call mark-read when new messages arrive while chat is open & visible
+                        if (hasUnread && activeChat.value?.id === c.id && document.visibilityState === 'visible') {
+                            requestMarkRead(c.id);
+                        }
                     });
 
                     chatUnsub = () => ref2.off();
@@ -2076,12 +2176,10 @@
                     db.ref(`chats/${c.id}/typing/${c.peerUid}`).on('value', (snap) => {
                         typingStatus.value = snap.val() ? 'typing...' : '';
                     });
-
-                    // Mark chat as seen
-                    await db.ref(`chats/${c.id}`).update({ lastStatus: 'seen' });
                 };
 
                 const closeChat = () => {
+                    clearTimeout(markReadTimer);
                     if (chatUnsub) chatUnsub();
                     activeChat.value = null;
                     typingStatus.value = '';
@@ -2092,24 +2190,33 @@
                 const sendMsg = async () => {
                     const txt = msgTxt.value.trim();
                     if (!txt && !quoted.value) return;
+                    const cid = activeChat.value?.id;
+                    if (!cid) return;
+
+                    const quoteData = quoted.value ? {
+                        id: quoted.value.id,
+                        text: quoted.value.text || (quoted.value.type === 'audio' ? '🎤 Voice Note' : '📎 Media'),
+                        sender: quoted.value.sender
+                    } : null;
+
                     msgTxt.value = '';
-                    const data = {
-                        text: txt, sender: user.value.uid,
-                        timestamp: firebase.database.ServerValue.TIMESTAMP,
-                        type: 'text', status: 'sent',
-                        quoted: quoted.value ? {
-                            id: quoted.value.id,
-                            text: quoted.value.text || (quoted.value.type === 'audio' ? '🎤 Voice Note' : '📎 Media'),
-                            sender: quoted.value.sender
-                        } : null
-                    };
                     quoted.value = null;
-                    await db.ref(`messages/${activeChat.value.id}`).push(data);
-                    await db.ref(`chats/${activeChat.value.id}`).update({
-                        lastMessage: txt, timestamp: firebase.database.ServerValue.TIMESTAMP,
-                        lastSender: user.value.uid, lastStatus: 'sent'
-                    });
-                    stopTyping();
+                    sendingMsg.value = true;
+                    try {
+                        await apiFetch('/api/send-message', {
+                            chatId: cid,
+                            text: txt,
+                            type: 'text',
+                            quoted: quoteData
+                        });
+                        stopTyping();
+                    } catch (e) {
+                        console.error('sendMsg error:', e);
+                        alert('Failed to send message: ' + (e.message || 'Unknown error'));
+                        msgTxt.value = txt;
+                    } finally {
+                        sendingMsg.value = false;
+                    }
                 };
 
                 // ── Typing ───────────────────────────────────────────────────
@@ -2134,13 +2241,24 @@
                     const file = ev.target.files[0];
                     if (!file) return;
                     if (file.size > 2 * 1024 * 1024) { alert('Max 2MB allowed.'); return; }
+                    const cid = activeChat.value?.id;
+                    if (!cid) return;
                     const reader = new FileReader();
                     reader.readAsDataURL(file);
                     reader.onload = async () => {
-                        const data = { text: file.name, url: reader.result, sender: user.value.uid, timestamp: firebase.database.ServerValue.TIMESTAMP, type: 'file', status: 'sent', quoted: null };
-                        await db.ref(`messages/${activeChat.value.id}`).push(data);
-                        await db.ref(`chats/${activeChat.value.id}`).update({ lastMessage: '📎 ' + file.name, timestamp: firebase.database.ServerValue.TIMESTAMP, lastSender: user.value.uid, lastStatus: 'sent' });
-                        ev.target.value = '';
+                        try {
+                            await apiFetch('/api/send-message', {
+                                chatId: cid,
+                                text: file.name,
+                                url: reader.result,
+                                type: 'file',
+                                quoted: null
+                            });
+                            ev.target.value = '';
+                        } catch (e) {
+                            console.error('onFile error:', e);
+                            alert('Failed to send file: ' + (e.message || 'Unknown error'));
+                        }
                     };
                 };
 
@@ -2184,14 +2302,25 @@
                 };
                 const stopRec = () => {
                     if (!mediaRec) return;
+                    const cid = activeChat.value?.id;
                     mediaRec.onstop = async () => {
                         const blob = new Blob(audioChunks, { type: 'audio/mp3' });
                         const reader = new FileReader();
                         reader.readAsDataURL(blob);
                         reader.onloadend = async () => {
-                            const data = { text: 'Voice Note', url: reader.result, sender: user.value.uid, timestamp: firebase.database.ServerValue.TIMESTAMP, type: 'audio', status: 'sent', quoted: null };
-                            await db.ref(`messages/${activeChat.value.id}`).push(data);
-                            await db.ref(`chats/${activeChat.value.id}`).update({ lastMessage: '🎤 Voice Note', timestamp: firebase.database.ServerValue.TIMESTAMP, lastSender: user.value.uid, lastStatus: 'sent' });
+                            if (!cid) return;
+                            try {
+                                await apiFetch('/api/send-message', {
+                                    chatId: cid,
+                                    text: 'Voice Note',
+                                    url: reader.result,
+                                    type: 'audio',
+                                    quoted: null
+                                });
+                            } catch (e) {
+                                console.error('stopRec error:', e);
+                                alert('Failed to send voice note: ' + (e.message || 'Unknown error'));
+                            }
                         };
                     };
                     mediaRec.stop();
@@ -2320,37 +2449,58 @@
                     const uid = uidInput.value.toString().trim();
                     if (!uid) return;
                     reqMsg.value = null;
-                    const snap = await db.ref(`uids/${uid}`).once('value');
-                    if (!snap.exists()) { reqMsg.value = { type: 'error', msg: 'UID not found.' }; return; }
-                    const tUid = snap.val();
-                    if (tUid === user.value.uid) { reqMsg.value = { type: 'error', msg: 'Cannot add yourself.' }; return; }
-                    await db.ref(`requests/${tUid}/${user.value.uid}`).set({ type: 'incoming', timestamp: Date.now() });
-                    await db.ref(`requests/${user.value.uid}/${tUid}`).set({ type: 'outgoing', timestamp: Date.now() });
-                    reqMsg.value = { type: 'success', msg: 'Request sent!' };
-                    uidInput.value = '';
-                    setTimeout(() => { reqMsg.value = null; }, 3000);
+                    sendingReq.value = true;
+                    try {
+                        const res = await apiFetch('/api/send-request', { toNumericUid: uid });
+                        if (res.autoAccepted) {
+                            reqMsg.value = { type: 'success', msg: 'Mutual request found — connected as contacts!' };
+                            uidInput.value = '';
+                            tab.value = 'chats';
+                            await new Promise(r => setTimeout(r, 300));
+                            const c = chatList.value.find(x => x.id === res.chatId);
+                            if (c) openChat(c);
+                        } else {
+                            reqMsg.value = { type: 'success', msg: 'Request sent!' };
+                            uidInput.value = '';
+                        }
+                        setTimeout(() => { reqMsg.value = null; }, 4000);
+                    } catch (e) {
+                        reqMsg.value = { type: 'error', msg: e.message || 'Failed to send request.' };
+                    } finally {
+                        sendingReq.value = false;
+                    }
                 };
 
                 const acceptReq = async (r) => {
-                    const my = user.value.uid;
-                    const their = r.uid;
-                    const cid = my < their ? `${my}_${their}` : `${their}_${my}`;
-                    await db.ref(`chats/${cid}`).set({ members: { [my]: true, [their]: true }, lastMessage: 'Chat started', timestamp: firebase.database.ServerValue.TIMESTAMP, lastSender: 'system' });
-                    await Promise.all([
-                        db.ref(`user_chats/${my}/${cid}`).set(true),
-                        db.ref(`user_chats/${their}/${cid}`).set(true),
-                        db.ref(`requests/${my}/${their}`).remove(),
-                        db.ref(`requests/${their}/${my}`).remove()
-                    ]);
-                    tab.value = 'chats';
-                    await new Promise(res => setTimeout(res, 300));
-                    const c = chatList.value.find(x => x.id === cid);
-                    if (c) openChat(c);
+                    reqActionId.value = r.uid;
+                    reqActionType.value = 'accept';
+                    try {
+                        const res = await apiFetch('/api/accept-request', { requestId: r.uid });
+                        tab.value = 'chats';
+                        await new Promise(resolve => setTimeout(resolve, 300));
+                        const c = chatList.value.find(x => x.id === res.chatId);
+                        if (c) openChat(c);
+                    } catch (e) {
+                        console.error('acceptReq error:', e);
+                        alert('Failed to accept request: ' + (e.message || 'Unknown error'));
+                    } finally {
+                        reqActionId.value = null;
+                        reqActionType.value = '';
+                    }
                 };
 
                 const rejectReq = async (r) => {
-                    await db.ref(`requests/${user.value.uid}/${r.uid}`).remove();
-                    await db.ref(`requests/${r.uid}/${user.value.uid}`).remove();
+                    reqActionId.value = r.uid;
+                    reqActionType.value = 'reject';
+                    try {
+                        await apiFetch('/api/reject-request', { requestId: r.uid });
+                    } catch (e) {
+                        console.error('rejectReq error:', e);
+                        alert('Failed to reject request: ' + (e.message || 'Unknown error'));
+                    } finally {
+                        reqActionId.value = null;
+                        reqActionType.value = '';
+                    }
                 };
 
                 // ── Profile ──────────────────────────────────────────────────
@@ -2831,6 +2981,7 @@
                     blockedList, unblock,
                     // Requests
                     reqs, reqCount, reqMsg, uidInput, sendReq, acceptReq, rejectReq,
+                    sendingReq, reqActionId, reqActionType, sendingMsg,
                     // Profile
                     tmpName, tmpBio, changeAvatar, saveProfile,
                     // Calls

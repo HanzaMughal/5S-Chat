@@ -1,0 +1,73 @@
+{
+  "rules": {
+    "users": {
+      "$uid": {
+        ".read": "auth != null",
+        ".write": "auth != null && auth.uid === $uid",
+        "contacts": {
+          ".write": false
+        },
+        "blocked": {
+          ".write": "auth != null && auth.uid === $uid"
+        }
+      }
+    },
+    "uids": {
+      ".read": "auth != null",
+      "$numeric_uid": {
+        ".write": "auth != null && (!data.exists() || data.val() === auth.uid)"
+      }
+    },
+    "requests": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": false
+      }
+    },
+    "user_chats": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        "$chatId": {
+          ".write": "auth != null && auth.uid === $uid && !newData.exists()"
+        }
+      }
+    },
+    "chats": {
+      "$chatId": {
+        ".read": "auth != null && data.child('members').child(auth.uid).exists()",
+        ".write": false,
+        "unread": {
+          ".write": false
+        },
+        "lastStatus": {
+          ".write": false
+        },
+        "typing": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('chats').child($chatId).child('members').child(auth.uid).exists()"
+          }
+        }
+      }
+    },
+    "messages": {
+      "$chatId": {
+        ".read": "auth != null && root.child('chats').child($chatId).child('members').child(auth.uid).exists()",
+        "$messageId": {
+          ".write": "auth != null && !newData.exists() && data.child('sender').val() === auth.uid",
+          "status": {
+            ".write": false
+          },
+          "reaction": {
+            ".write": "auth != null && root.child('chats').child($chatId).child('members').child(auth.uid).exists()"
+          }
+        }
+      }
+    },
+    "calls": {
+      "$uid": {
+        ".read": "auth != null && auth.uid === $uid",
+        ".write": "auth != null"
+      }
+    }
+  }
+}
