@@ -1,0 +1,54 @@
+{
+    "rules": {
+        ".read": false,
+        ".write": false,
+        "users": {
+            ".read": "auth != null",
+            "$uid": {
+                ".write": "auth != null && auth.uid === $uid",
+                ".validate": "newData.hasChildren(['uid','username','email']) && newData.child('uid').val() === $uid"
+            }
+        },
+        "uids": {
+            "$numericUid": {
+                ".read": "auth != null",
+                ".write": "auth != null && !data.exists() && newData.val() === auth.uid"
+            }
+        },
+        "requests": {
+            "$uid": {
+                ".read": "auth != null && auth.uid === $uid",
+                "$otherUid": {
+                    ".write": "auth != null && (auth.uid === $uid || auth.uid === $otherUid)"
+                }
+            }
+        },
+        "chats": {
+            "$cid": {
+                ".read": "auth != null && data.child('members').child(auth.uid).exists()",
+                ".write": "auth != null && (data.child('members').child(auth.uid).exists() || newData.child('members').child(auth.uid).exists())"
+            }
+        },
+        "user_chats": {
+            "$uid": {
+                ".read": "auth != null && auth.uid === $uid",
+                ".write": "auth != null && auth.uid === $uid"
+            }
+        },
+        "messages": {
+            "$cid": {
+                ".read": "auth != null && root.child('chats').child($cid).child('members').child(auth.uid).exists()",
+                ".write": "auth != null && root.child('chats').child($cid).child('members').child(auth.uid).exists()"
+            }
+        },
+        "calls": {
+            "$uid": {
+                ".read": "auth != null && auth.uid === $uid",
+                ".write": "auth != null && (auth.uid === $uid || (newData.exists() && newData.child('from').val() === auth.uid) || (data.exists() && data.child('from').val() === auth.uid))",
+                "candidates": {
+                    ".write": "auth != null"
+                }
+            }
+        }
+    }
+}
