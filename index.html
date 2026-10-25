@@ -2009,7 +2009,7 @@
 
                 const doLogout = async () => {
                     // Remove FCM token before signing out so we stop receiving push notifications
- {
+                    try {
                         const uid = user.value?.uid;
                         if (uid && 'serviceWorker' in navigator) {
                             const messaging = firebase.messaging();
@@ -2022,11 +2022,11 @@
                     } catch (e) {
                         console.warn('[FCM] Token removal on logout failed:', e.message);
                     }
-.signOut();
-.value = null;
-.value = [];
-.value = [];
-.clear();
+                    auth.signOut();
+                    activeChat.value = null;
+                    chatList.value = [];
+                    msgs.value = [];
+                    chatListeners.clear();
                 };
 
 
