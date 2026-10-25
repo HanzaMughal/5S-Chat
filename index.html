@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="en">
 
 <head>
@@ -22,6 +22,8 @@
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-database-compat.js"></script>
+    <!-- Firebase Messaging SDK (required for FCM web push) -->
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-messaging-compat.js"></script>
 
     <style>
         /* ─── THEME VARIABLES ─────────────────────────────────────── */
@@ -2005,13 +2007,28 @@
                     }
                 };
 
-                const doLogout = () => {
-                    auth.signOut();
-                    activeChat.value = null;
-                    chatList.value = [];
-                    msgs.value = [];
-                    chatListeners.clear();
+                const doLogout = async () => {
+                    // Remove FCM token before signing out so we stop receiving push notifications
+ {
+                        const uid = user.value?.uid;
+                        if (uid && 'serviceWorker' in navigator) {
+                            const messaging = firebase.messaging();
+                            const token = await messaging.getToken().catch(() => null);
+                            if (token) {
+                                await messaging.deleteToken();
+                                await db.ref(FCM_TOKENS_PATH + '/' + uid + '/' + token).remove();
+                            }
+                        }
+                    } catch (e) {
+                        console.warn('[FCM] Token removal on logout failed:', e.message);
+                    }
+.signOut();
+.value = null;
+.value = [];
+.value = [];
+.clear();
                 };
+
 
                 // ── Theme ────────────────────────────────────────────────────
                 const toggleTheme = () => {
@@ -2021,10 +2038,40 @@
                     else document.documentElement.classList.remove('dark');
                 };
 
-                // ── Notifications ────────────────────────────────────────────
-                const requestNotifPerm = () => {
-                    if ('Notification' in window) Notification.requestPermission();
+                // ── Notifications / FCM ────────────────────────────────────
+                // VAPID public key for web push
+                const VAPID_KEY = 'BEZEX6s0WIqhn2tm5izXvogZgls7VhV7jjiCjNMTOkAK-r5Y-N5CkXuYRRUDUlyRcb4xggDEcVW6dUotS4tNOeA';
+                const FCM_TOKENS_PATH = 'fcm_tokens';
+
+                const requestNotifPerm = async () => {
+                    if (!('Notification' in window) || !('serviceWorker' in navigator)) return;
+                    try {
+                        const permission = await Notification.requestPermission();
+                        if (permission !== 'granted') return;
+
+                        // Register the service worker (must be at root scope)
+                        const swReg = await navigator.serviceWorker.register('/firebase-messaging-sw.js');
+                        await navigator.serviceWorker.ready;
+
+                        // Get FCM token using the registered SW and VAPID key
+                        const messaging = firebase.messaging();
+                        const token = await messaging.getToken({ vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg });
+                        if (token && user.value?.uid) {
+                            // Store token under fcm_tokens/{uid}/{token} (supports multiple devices)
+                            await db.ref(FCM_TOKENS_PATH + '/' + user.value.uid + '/' + token).set(true);
+                            console.log('[FCM] Token registered');
+                        }
+
+                        // Handle foreground messages (app open and visible)
+                        messaging.onMessage((payload) => {
+                            const n = payload.notification || {};
+                            showNotif(n.title || 'New message', n.body || '');
+                        });
+                    } catch (e) {
+                        console.warn('[FCM] Failed to register for push notifications:', e.message);
+                    }
                 };
+
                 const showNotif = (name, body) => {
                     if (Notification.permission === 'granted') {
                         new Notification(name, { body, icon: 'https://cdn-icons-png.flaticon.com/512/124/124034.png' });
@@ -2210,6 +2257,13 @@
                             quoted: quoteData
                         });
                         stopTyping();
+                        // Fire-and-forget push notification (non-blocking)
+                        apiFetch('/api/send-notification', {
+                            recipientId: activeChat.value?.peerUid,
+                            chatId: cid,
+                            messageText: txt,
+                            messageType: 'text'
+                        }).catch(function(e) { console.warn('[FCM] send-notification failed:', e.message); });
                     } catch (e) {
                         console.error('sendMsg error:', e);
                         alert('Failed to send message: ' + (e.message || 'Unknown error'));
@@ -2255,6 +2309,13 @@
                                 quoted: null
                             });
                             ev.target.value = '';
+                            // Fire-and-forget push notification
+                            apiFetch('/api/send-notification', {
+                                recipientId: activeChat.value?.peerUid,
+                                chatId: cid,
+                                messageText: file.name,
+                                messageType: 'file'
+                            }).catch(function(e) { console.warn('[FCM] send-notification failed:', e.message); });
                         } catch (e) {
                             console.error('onFile error:', e);
                             alert('Failed to send file: ' + (e.message || 'Unknown error'));
@@ -2317,6 +2378,13 @@
                                     type: 'audio',
                                     quoted: null
                                 });
+                                // Fire-and-forget push notification
+                                apiFetch('/api/send-notification', {
+                                    recipientId: activeChat.value?.peerUid,
+                                    chatId: cid,
+                                    messageText: 'Voice Note',
+                                    messageType: 'audio'
+                                }).catch(function(e) { console.warn('[FCM] send-notification failed:', e.message); });
                             } catch (e) {
                                 console.error('stopRec error:', e);
                                 alert('Failed to send voice note: ' + (e.message || 'Unknown error'));
